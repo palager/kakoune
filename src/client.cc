@@ -169,9 +169,6 @@ void Client::change_buffer(Buffer& buffer)
     if (m_buffer_reload_dialog_opened)
         close_buffer_reload_dialog();
 
-    auto* current = &m_window->buffer();
-    m_last_buffer = contains(BufferManager::instance(), current) ? current : nullptr;
-
     auto& client_manager = ClientManager::instance();
     m_window->options().unregister_watcher(*this);
     m_window->set_client(nullptr);
@@ -264,7 +261,7 @@ void Client::redraw_ifn()
     auto cursor = m_input_handler.get_cursor_info();
     m_ui->set_cursor(cursor.first, cursor.second);
 
-    m_ui->refresh(m_ui_pending | Refresh);
+    m_ui->refresh(m_ui_pending & Refresh);
     m_ui_pending = 0;
 }
 

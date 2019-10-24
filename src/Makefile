@@ -10,6 +10,7 @@ endif
 
 ifeq ($(debug),yes)
     CPPFLAGS += -DKAK_DEBUG
+    CXXFLAGS += -O0
     suffix := .debug
 else
     ifeq ($(debug),no)
@@ -21,12 +22,12 @@ else
 endif
 
 ifneq (,$(findstring address,$(sanitize)))
-    CPPFLAGS += -fsanitize=address
+    CXXFLAGS += -fsanitize=address
     LDFLAGS += -lasan
     sanitize_suffix := $(sanitize_suffix)a
 endif
 ifneq (,$(findstring undefined,$(sanitize)))
-    CPPFLAGS += -fsanitize=undefined
+    CXXFLAGS += -fsanitize=undefined
     LDFLAGS += -lubsan
     sanitize_suffix := $(sanitize_suffix)u
 endif
@@ -73,6 +74,7 @@ else ifeq ($(os),OpenBSD)
     LIBS += -lncursesw
     CPPFLAGS += -D'KAK_BIN_PATH="$(bindir)/kak"' -I/usr/local/include
     LDFLAGS += -L/usr/local/lib
+    mandir := $(DESTDIR)$(PREFIX)/man/man1
 else ifneq (,$(findstring CYGWIN,$(os)))
     CPPFLAGS += -D_XOPEN_SOURCE=700
     LIBS += -lncursesw -ldbghelp
@@ -87,6 +89,13 @@ else
 endif
 
 CXXFLAGS += -pedantic -std=c++17 -g -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-address
+
+compiler := $(shell $(CXX) --version)
+ifneq (,$(findstring clang,$(compiler)))
+    CXXFLAGS += -frelaxed-template-template-args
+else ifneq (,$(findstring GCC,$(compiler)))
+    CXXFLAGS += -Wno-init-list-lifetime
+endif
 
 all : kak
 
@@ -113,7 +122,7 @@ kak$(suffix) : $(objects) .version.o
 # Generate the man page
 ifeq ($(gzip_man),yes)
 ../doc/kak.1.gz: ../doc/kak.1
-	gzip -n -9 -f -k $<
+	gzip -n -9 -f < $< > $@
 man: ../doc/kak.1.gz
 else
 man: ../doc/kak.1

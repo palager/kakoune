@@ -67,7 +67,7 @@ void CommandManager::load_module(StringView module_name, Context& context)
     execute(module->value.commands, empty_context);
     module->value.commands.clear();
 
-    context.hooks().run_hook(Hook::ModuleLoad, module_name, context);
+    context.hooks().run_hook(Hook::ModuleLoaded, module_name, context);
 }
 
 struct parse_error : runtime_error
@@ -286,7 +286,7 @@ Token parse_percent_token(Reader& reader, bool throw_on_unterminated)
 
 auto expand_option(Option& opt, std::true_type)
 {
-    return opt.get_as_string(Quoting::Kakoune);
+    return opt.get_as_string(Quoting::Raw);
 }
 
 auto expand_option(Option& opt, std::false_type)
@@ -462,10 +462,9 @@ String expand(StringView str, const Context& context,
 
 String expand(StringView str, const Context& context,
               const ShellContext& shell_context,
-              const std::function<String (String)>& postprocess)
+              const FunctionRef<String (String)>& postprocess)
 {
-    return expand_impl(str, context, shell_context,
-                       [&](String s) { return postprocess(std::move(s)); });
+    return expand_impl(str, context, shell_context, postprocess);
 }
 
 struct command_not_found : runtime_error
@@ -726,7 +725,7 @@ Completions CommandManager::complete(const Context& context,
             context, flags, params, tokens.size() - 2,
             cursor_pos_in_token), start);
 
-        if (not completions.quoted and token.type == Token::Type::Raw)
+        if (not (completions.flags & Completions::Flags::Quoted) and token.type == Token::Type::Raw)
         {
             for (auto& c : completions.candidates)
                 c = (not c.empty() and contains("%'\"", c[0]) ? "\\" : "") + escape(c, "; \t", '\\');

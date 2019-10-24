@@ -4,6 +4,8 @@
 #include "utf8_iterator.hh"
 #include "unit_tests.hh"
 
+#include <cstdio>
+
 namespace Kakoune
 {
 
@@ -17,6 +19,30 @@ StringView trim_whitespaces(StringView str)
     return {beg, end};
 }
 
+String trim_indent(StringView str)
+{
+    if (str.empty())
+        return {};
+
+    if (str[0_byte] == '\n')
+        str = str.substr(1_byte);
+    while (not str.empty() and is_blank(str.back()))
+        str = str.substr(0, str.length() - 1);
+
+    utf8::iterator it{str.begin(), str};
+    while (it != str.end() and is_horizontal_blank(*it))
+        it++;
+
+    const StringView indent{str.begin(), it.base()};
+    return accumulate(str | split_after<StringView>('\n') | transform([&](auto&& line) {
+            if (line == "\n")
+                return line;
+            else if (not prefix_match(line, indent))
+                throw runtime_error("inconsistent indentation in the string");
+
+            return line.substr(indent.length());
+        }), String{}, [](String& s, StringView l) -> decltype(auto) { return s += l; });
+}
 
 String escape(StringView str, StringView characters, char escape)
 {
@@ -376,6 +402,15 @@ UnitTest test_string{[]()
     kak_assert(wrapped2[0] == "error:");
     kak_assert(wrapped2[1] == "unknown");
     kak_assert(wrapped2[2] == "type");
+
+    kak_assert(trim_indent(" ") == "");
+    kak_assert(trim_indent("no-indent") == "no-indent");
+    kak_assert(trim_indent("\nno-indent") == "no-indent");
+    kak_assert(trim_indent("\n  indent\n  indent") == "indent\nindent");
+    kak_assert(trim_indent("\n  indent\n    indent") == "indent\n  indent");
+    kak_assert(trim_indent("\n  indent\n  indent\n   ") == "indent\nindent");
+
+    kak_expect_throw(runtime_error, trim_indent("\n  indent\nno-indent"));
 
     kak_assert(escape(R"(\youpi:matin:tchou\:)", ":\\", '\\') == R"(\\youpi\:matin\:tchou\\\:)");
     kak_assert(unescape(R"(\\youpi\:matin\:tchou\\\:)", ":\\", '\\') == R"(\youpi:matin:tchou\:)");

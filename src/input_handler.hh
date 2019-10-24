@@ -68,7 +68,7 @@ public:
     // returns to normal mode after validation if callback does
     // not change the mode itself
     void prompt(StringView prompt, String initstr, String emptystr,
-                Face prompt_face, PromptFlags flags,
+                Face prompt_face, PromptFlags flags, char history_register,
                 PromptCompleter completer, PromptCallback callback);
     void set_prompt_face(Face prompt_face);
 
@@ -148,7 +148,7 @@ constexpr bool with_bit_ops(Meta::Type<AutoInfo>) { return true; }
 
 constexpr auto enum_desc(Meta::Type<AutoInfo>)
 {
-    return make_array<EnumDesc<AutoInfo>, 3>({
+    return make_array<EnumDesc<AutoInfo>>({
         { AutoInfo::Command, "command"},
         { AutoInfo::OnKey, "onkey"},
         { AutoInfo::Normal, "normal" }
@@ -165,7 +165,7 @@ constexpr bool with_bit_ops(Meta::Type<AutoComplete>) { return true; }
 
 constexpr auto enum_desc(Meta::Type<AutoComplete>)
 {
-    return make_array<EnumDesc<AutoComplete>, 3>({
+    return make_array<EnumDesc<AutoComplete>>({
         { AutoComplete::Insert, "insert"},
         { AutoComplete::Prompt, "prompt" }
     });
@@ -186,7 +186,7 @@ void on_next_key_with_autoinfo(const Context& context, KeymapMode keymap_mode, C
     });
 }
 
-void scroll_window(Context& context, LineCount offset);
+void scroll_window(Context& context, LineCount offset, bool adapt_cursor = true);
 
 }
 

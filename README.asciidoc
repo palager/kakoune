@@ -168,23 +168,17 @@ cave resolve -x kakoune
 [TIP]
 .openSUSE
 ====
-kakoune can be found in the
-https://build.opensuse.org/package/show/editors/kakoune[editors] devel
-project.  Make sure to adjust the link below to point to the repository of
-your openSUSE version.
+kakoune can be found in the https://software.opensuse.org/package/kakoune[repositories].
 
----------------------------------------------------------------------------------------------------
-#Example for Tumbleweed:
-sudo zypper addrepo http://download.opensuse.org/repositories/editors/openSUSE_Factory/editors.repo
-sudo zypper refresh
+---------------------------
 sudo zypper install kakoune
----------------------------------------------------------------------------------------------------
+---------------------------
 ====
 
 [TIP]
 .Ubuntu
 ====
-Building on Ubuntu 16.04.
+Building on Ubuntu 16.04 and 18.04.
 Make sure you have .local/bin in your path to make the kak binary available from your shell.
 
 ----------------------------------------------------------------
@@ -243,8 +237,8 @@ pkg install kakoune
 Running
 ~~~~~~~
 
-Just running *kak* launch a new kak session with a client on local terminal.
-Run *kak -help* to discover the valid <<doc/kak.1#options,command line flags>>.
+Just running *kak* launches a new kak session with a client on local terminal.
+Run *kak -help* to discover the valid command line flags.
 
 Configuration
 ^^^^^^^^^^^^^
@@ -493,7 +487,7 @@ Changes
             tabstop option or the count parameter for tabstop.
 
  * `<a-)>`: rotate selections content, if specified, the count groups
-            selections, so `3<a-">` rotate (1, 2, 3) and (3, 4, 6)
+            selections, so `3<a-)>` rotate (1, 2, 3) and (3, 4, 6)
             independently.
  * `<a-(>`: rotate selections content backwards
 

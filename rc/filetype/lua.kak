@@ -54,7 +54,7 @@ define-command lua-alternative-file -docstring 'Jump to the alternate file (impl
     case $kak_buffile in
         *spec/*_spec.lua)
             altfile=$(eval printf %s\\n $(printf %s\\n $kak_buffile | sed s+spec/+'*'/+';'s/_spec//))
-            [ ! -f $altfile ] && echo "echo -markup '{Error}implementation file not found'" && exit
+            [ ! -f $altfile ] && echo "fail 'implementation file not found'" && exit
         ;;
         *.lua)
             path=$kak_buffile
@@ -66,10 +66,10 @@ define-command lua-alternative-file -docstring 'Jump to the alternate file (impl
                     break
                 fi
             done
-            [ ! -d $altdir ] && echo "echo -markup '{Error}spec/ not found'" && exit
+            [ ! -d $altdir ] && echo "fail 'spec/ not found'" && exit
         ;;
         *)
-            echo "echo -markup '{Error}alternative file not found'" && exit
+            echo "fail 'alternative file not found'" && exit
         ;;
     esac
     printf %s\\n "edit $altfile"
@@ -78,8 +78,8 @@ define-command lua-alternative-file -docstring 'Jump to the alternate file (impl
 define-command -hidden lua-indent-on-char %{
     evaluate-commands -no-hooks -draft -itersel %{
         # align middle and end structures to start and indent when necessary, elseif is already covered by else
-        try %{ execute-keys -draft <a-x><a-k>^\h*(else)$<ret><a-\;><a-?>^\h*(if)<ret>s\A|\z<ret>)<a-&> }
-        try %{ execute-keys -draft <a-x><a-k>^\h*(end)$<ret><a-\;><a-?>^\h*(for|function|if|while)<ret>s\A|\z<ret>)<a-&> }
+        try %{ execute-keys -draft <a-x><a-k>^\h*(else)$<ret><a-semicolon><a-?>^\h*(if)<ret>s\A|\z<ret>)<a-&> }
+        try %{ execute-keys -draft <a-x><a-k>^\h*(end)$<ret><a-semicolon><a-?>^\h*(for|function|if|while)<ret>s\A|\z<ret>)<a-&> }
     }
 }
 

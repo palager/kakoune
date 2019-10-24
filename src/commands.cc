@@ -102,12 +102,31 @@ make_completer(Completers&&... completers)
     return {std::forward<Completers>(completers)...};
 }
 
+template<typename Completer>
+auto add_flags(Completer completer, Completions::Flags completions_flags)
+{
+    return [completer=std::move(completer), completions_flags]
+           (const Context& context, CompletionFlags flags, const String& prefix, ByteCount cursor_pos) {
+        Completions res = completer(context, flags, prefix, cursor_pos);
+        res.flags |= completions_flags;
+        return res;
+    };
+}
+
+template<typename Completer>
+auto menu(Completer completer)
+{
+    return add_flags(std::move(completer), Completions::Flags::Menu);
+}
+
+template<bool menu>
 auto filename_completer = make_completer(
     [](const Context& context, CompletionFlags flags, const String& prefix, ByteCount cursor_pos)
     { return Completions{ 0_byte, cursor_pos,
                           complete_filename(prefix,
                                             context.options()["ignored_files"].get<Regex>(),
-                                            cursor_pos, FilenameFlags::Expand) }; });
+                                            cursor_pos, FilenameFlags::Expand),
+                                            menu ? Completions::Flags::Menu : Completions::Flags::None}; });
 
 template<bool ignore_current = false>
 static Completions complete_buffer_name(const Context& context, CompletionFlags flags,
@@ -165,9 +184,6 @@ auto make_single_word_completer(std::function<String (const Context&)> func)
             return { 0_byte, cursor_pos, complete(prefix, cursor_pos, candidate) }; });
 }
 
-auto buffer_completer = make_completer(complete_buffer_name<false>);
-auto other_buffer_completer = make_completer(complete_buffer_name<true>);
-
 const ParameterDesc no_params{ {}, ParameterDesc::Flags::None, 0, 0 };
 const ParameterDesc single_param{ {}, ParameterDesc::Flags::None, 1, 1 };
 const ParameterDesc single_optional_param{ {}, ParameterDesc::Flags::None, 0, 1 };
@@ -190,7 +206,9 @@ static Completions complete_command_name(const Context& context, CompletionFlags
 
 struct ShellScriptCompleter
 {
-    ShellScriptCompleter(String shell_script) : m_shell_script{std::move(shell_script)} {}
+    ShellScriptCompleter(String shell_script,
+                         Completions::Flags flags = Completions::Flags::None)
+      : m_shell_script{std::move(shell_script)}, m_flags(flags) {}
 
     Completions operator()(const Context& context, CompletionFlags flags,
                            CommandParameters params, size_t token_to_complete,
@@ -211,15 +229,18 @@ struct ShellScriptCompleter
         for (auto&& candidate : output | split<StringView>('\n'))
             candidates.push_back(candidate.str());
 
-        return {0_byte, pos_in_token, std::move(candidates)};
+        return {0_byte, pos_in_token, std::move(candidates), m_flags};
     }
 private:
     String m_shell_script;
+    Completions::Flags m_flags;
 };
 
 struct ShellCandidatesCompleter
 {
-    ShellCandidatesCompleter(String shell_script) : m_shell_script{std::move(shell_script)} {}
+    ShellCandidatesCompleter(String shell_script,
+                             Completions::Flags flags = Completions::Flags::None)
+      : m_shell_script{std::move(shell_script)}, m_flags(flags) {}
 
     Completions operator()(const Context& context, CompletionFlags flags,
                            CommandParameters params, size_t token_to_complete,
@@ -263,13 +284,14 @@ struct ShellCandidatesCompleter
             return true;
         });
 
-        return Completions{ 0_byte, pos_in_token, std::move(res) };
+        return Completions{0_byte, pos_in_token, std::move(res), m_flags};
     }
 
 private:
     String m_shell_script;
     Vector<std::pair<String, UsedLetters>, MemoryDomain::Completion> m_candidates;
     int m_token = -1;
+    Completions::Flags m_flags;
 };
 
 template<typename Completer>
@@ -421,7 +443,7 @@ const CommandDesc edit_cmd = {
     edit_params,
     CommandFlags::None,
     CommandHelper{},
-    filename_completer,
+    filename_completer<false>,
     edit<false>
 };
 
@@ -433,7 +455,7 @@ const CommandDesc force_edit_cmd = {
     edit_params,
     CommandFlags::None,
     CommandHelper{},
-    filename_completer,
+    filename_completer<false>,
     edit<true>
 };
 
@@ -480,7 +502,7 @@ const CommandDesc write_cmd = {
     write_params,
     CommandFlags::None,
     CommandHelper{},
-    filename_completer,
+    filename_completer<false>,
     write_buffer,
 };
 
@@ -492,7 +514,7 @@ const CommandDesc force_write_cmd = {
     write_params,
     CommandFlags::None,
     CommandHelper{},
-    filename_completer,
+    filename_completer<false>,
     write_buffer<true>,
 };
 
@@ -688,7 +710,7 @@ const CommandDesc buffer_cmd = {
     single_param,
     CommandFlags::None,
     CommandHelper{},
-    other_buffer_completer,
+    make_completer(menu(complete_buffer_name<true>)),
     [](const ParametersParser& parser, Context& context, const ShellContext&)
     {
         Buffer& buffer = BufferManager::instance().get_buffer(parser[0]);
@@ -766,6 +788,7 @@ void delete_buffer(const ParametersParser& parser, Context& context, const Shell
         throw runtime_error(format("buffer '{}' is modified", buffer.name()));
 
     manager.delete_buffer(buffer);
+    context.forget_buffer(buffer);
 }
 
 const CommandDesc delete_buffer_cmd = {
@@ -775,7 +798,7 @@ const CommandDesc delete_buffer_cmd = {
     single_optional_param,
     CommandFlags::None,
     CommandHelper{},
-    buffer_completer,
+    make_completer(menu(complete_buffer_name<false>)),
     delete_buffer<false>
 };
 
@@ -787,7 +810,7 @@ const CommandDesc force_delete_buffer_cmd = {
     single_optional_param,
     CommandFlags::None,
     CommandHelper{},
-    buffer_completer,
+    make_completer(menu(complete_buffer_name<false>)),
     delete_buffer<true>
 };
 
@@ -1037,6 +1060,9 @@ void define_command(const ParametersParser& parser, Context& context, const Shel
     if (parser.get_switch("hidden"))
         flags = CommandFlags::Hidden;
 
+    const Completions::Flags completions_flags = parser.get_switch("menu") ?
+        Completions::Flags::Menu : Completions::Flags::None;
+
     const String& commands = parser[1];
     CommandFunc cmd;
     ParameterDesc desc;
@@ -1073,45 +1099,48 @@ void define_command(const ParametersParser& parser, Context& context, const Shel
     CommandCompleter completer;
     if (parser.get_switch("file-completion"))
     {
-        completer = [](const Context& context, CompletionFlags flags,
+        completer = [=](const Context& context, CompletionFlags flags,
                        CommandParameters params,
                        size_t token_to_complete, ByteCount pos_in_token)
         {
              const String& prefix = params[token_to_complete];
              auto& ignored_files = context.options()["ignored_files"].get<Regex>();
-             return Completions{ 0_byte, pos_in_token,
-                                 complete_filename(prefix, ignored_files,
-                                                   pos_in_token, FilenameFlags::Expand) };
+             return Completions{0_byte, pos_in_token,
+                                complete_filename(prefix, ignored_files,
+                                                  pos_in_token, FilenameFlags::Expand),
+                                completions_flags};
         };
     }
     else if (parser.get_switch("client-completion"))
     {
-        completer = [](const Context& context, CompletionFlags flags,
+        completer = [=](const Context& context, CompletionFlags flags,
                        CommandParameters params,
                        size_t token_to_complete, ByteCount pos_in_token)
         {
              const String& prefix = params[token_to_complete];
              auto& cm = ClientManager::instance();
-             return Completions{ 0_byte, pos_in_token,
-                                 cm.complete_client_name(prefix, pos_in_token) };
+             return Completions{0_byte, pos_in_token,
+                                cm.complete_client_name(prefix, pos_in_token),
+                                completions_flags};
         };
     }
     else if (parser.get_switch("buffer-completion"))
     {
-        completer = [](const Context& context, CompletionFlags flags,
+        completer = [=](const Context& context, CompletionFlags flags,
                        CommandParameters params,
                        size_t token_to_complete, ByteCount pos_in_token)
         {
-             return complete_buffer_name(context, flags, params[token_to_complete], pos_in_token);
+             return add_flags(complete_buffer_name<false>, completions_flags)(
+                 context, flags, params[token_to_complete], pos_in_token);
         };
     }
     else if (auto shell_script = parser.get_switch("shell-script-completion"))
     {
-        completer = ShellScriptCompleter{shell_script->str()};
+        completer = ShellScriptCompleter{shell_script->str(), completions_flags};
     }
     else if (auto shell_script = parser.get_switch("shell-script-candidates"))
     {
-        completer = ShellCandidatesCompleter{shell_script->str()};
+        completer = ShellCandidatesCompleter{shell_script->str(), completions_flags};
     }
     else if (parser.get_switch("command-completion"))
     {
@@ -1125,17 +1154,18 @@ void define_command(const ParametersParser& parser, Context& context, const Shel
     }
     else if (parser.get_switch("shell-completion"))
     {
-        completer = [](const Context& context, CompletionFlags flags,
-                       CommandParameters params,
-                       size_t token_to_complete, ByteCount pos_in_token)
+        completer = [=](const Context& context, CompletionFlags flags,
+                        CommandParameters params,
+                        size_t token_to_complete, ByteCount pos_in_token)
         {
-            return shell_complete(context, flags, params[token_to_complete], pos_in_token);
+            return add_flags(shell_complete, completions_flags)(
+                context, flags, params[token_to_complete], pos_in_token);
         };
     }
 
-    auto docstring = trim_whitespaces(parser.get_switch("docstring").value_or(StringView{}));
+    auto docstring = trim_indent(parser.get_switch("docstring").value_or(StringView{}));
 
-    cm.register_command(cmd_name, cmd, docstring.str(), desc, flags, CommandHelper{}, completer);
+    cm.register_command(cmd_name, cmd, docstring, desc, flags, CommandHelper{}, completer);
 }
 
 const CommandDesc define_command_cmd = {
@@ -1148,6 +1178,7 @@ const CommandDesc define_command_cmd = {
           { "override",                 { false, "allow overriding an existing command" } },
           { "hidden",                   { false, "do not display the command in completion candidates" } },
           { "docstring",                { true,  "define the documentation string for command" } },
+          { "menu",                     { false, "treat completions as the only valid inputs" } },
           { "file-completion",          { false, "complete parameters using filename completion" } },
           { "client-completion",        { false, "complete parameters using client name completion" } },
           { "buffer-completion",        { false, "complete parameters using buffer name completion" } },
@@ -1215,6 +1246,7 @@ const CommandDesc echo_cmd = {
     "echo <params>...: display given parameters in the status line",
     ParameterDesc{
         { { "markup", { false, "parse markup" } },
+          { "quoting", { true, "quote each argument separately using the given style (raw|kakoune|shell)" } },
           { "to-file", { true, "echo contents to given filename" } },
           { "debug", { false, "write to debug buffer instead of status line" } } },
         ParameterDesc::Flags::SwitchesOnlyAtStart
@@ -1224,7 +1256,13 @@ const CommandDesc echo_cmd = {
     CommandCompleter{},
     [](const ParametersParser& parser, Context& context, const ShellContext&)
     {
-        String message = join(parser, ' ', false);
+        String message;
+        if (auto quoting = parser.get_switch("quoting"))
+            message = join(parser | transform(quoter(option_from_string(Meta::Type<Quoting>{}, *quoting))),
+                           ' ', false);
+        else
+            message = join(parser, ' ', false);
+
         if (auto filename = parser.get_switch("to-file"))
             return write_to_file(*filename, message);
 
@@ -1368,7 +1406,7 @@ const CommandDesc source_cmd = {
     ParameterDesc{ {}, ParameterDesc::Flags::None, 1, (size_t)-1 },
     CommandFlags::None,
     CommandHelper{},
-    filename_completer,
+    filename_completer<true>,
     [](const ParametersParser& parser, Context& context, const ShellContext&)
     {
         const DebugFlags debug_flags = context.options()["debug"].get<DebugFlags>();
@@ -1447,7 +1485,9 @@ const CommandDesc set_option_cmd = {
                  GlobalScope::instance().option_registry().option_exists(params[start + 1]))
         {
             OptionManager& options = get_scope(params[start], context).options();
-            return { 0_byte, params[start + 2].length(), { options[params[start + 1]].get_as_string(Quoting::Kakoune) }, true };
+            return {0_byte, params[start + 2].length(),
+                    {options[params[start + 1]].get_as_string(Quoting::Kakoune)},
+                    Completions::Flags::Quoted};
         }
         return Completions{};
     },
@@ -1550,7 +1590,7 @@ const CommandDesc declare_option_cmd = {
         if (parser.get_switch("hidden"))
             flags = OptionFlags::Hidden;
 
-        auto docstring = trim_whitespaces(parser.get_switch("docstring").value_or(StringView{})).str();
+        auto docstring = trim_indent(parser.get_switch("docstring").value_or(StringView{}));
         OptionsRegistry& reg = GlobalScope::instance().option_registry();
 
 
@@ -1632,7 +1672,7 @@ const CommandDesc map_key_cmd = {
 
         KeyList mapping = parse_keys(parser[3]);
         keymaps.map_key(key[0], keymap_mode, std::move(mapping),
-                        trim_whitespaces(parser.get_switch("docstring").value_or("")).str());
+                        trim_indent(parser.get_switch("docstring").value_or("")));
     }
 };
 
@@ -1700,10 +1740,10 @@ void context_wrap(const ParametersParser& parser, Context& context, StringView d
 
     auto& register_manager = RegisterManager::instance();
     auto make_register_restorer = [&](char c) {
-        return on_scope_end([&, c, save=register_manager[c].get(context) | gather<Vector<String>>()] {
+        return on_scope_end([&, c, save=register_manager[c].save(context)] {
             try
             {
-                RegisterManager::instance()[c].set(context, save);
+                RegisterManager::instance()[c].restore(context, save);
             }
             catch (runtime_error& err)
             {
@@ -1849,7 +1889,7 @@ const CommandDesc exec_string_cmd = {
     CommandCompleter{},
     [](const ParametersParser& parser, Context& context, const ShellContext&)
     {
-        context_wrap(parser, context, "/\"|^@", [](const ParametersParser& parser, Context& context) {
+        context_wrap(parser, context, "/\"|^@:", [](const ParametersParser& parser, Context& context) {
             ScopedSetBool disable_keymaps(context.keymaps_disabled(), not parser.get_switch("with-maps"));
             ScopedSetBool disable_hoooks(context.hooks_disabled(), not parser.get_switch("with-hooks"));
 
@@ -1870,7 +1910,10 @@ const CommandDesc eval_string_cmd = {
     "evaluate-commands",
     "eval",
     "evaluate-commands [<switches>] <commands>...: execute commands as if entered by user",
-    make_context_wrap_params<1>({{{"no-hooks", { false, "disable hooks while executing commands" }}}}),
+    make_context_wrap_params<2>({{
+        {"no-hooks", { false, "disable hooks while executing commands" }},
+        {"verbatim", { false, "do not reparse argument" }}
+    }}),
     CommandFlags::None,
     CommandHelper{},
     CommandCompleter{},
@@ -1880,7 +1923,10 @@ const CommandDesc eval_string_cmd = {
             const bool no_hooks = context.hooks_disabled() or parser.get_switch("no-hooks");
             ScopedSetBool disable_hoooks(context.hooks_disabled(), no_hooks);
 
-            CommandManager::instance().execute(join(parser, ' ', false), context, shell_context);
+            if (parser.get_switch("verbatim"))
+                CommandManager::instance().execute_single_command(parser | gather<Vector>(), context, shell_context);
+            else
+                CommandManager::instance().execute(join(parser, ' ', false), context, shell_context);
         });
     }
 };
@@ -1962,7 +2008,7 @@ const CommandDesc prompt_cmd = {
         CapturedShellContext sc{shell_context};
         context.input_handler().prompt(
             parser[0], initstr.str(), {}, context.faces()["Prompt"],
-            flags, std::move(completer),
+            flags, '_', std::move(completer),
             [=](StringView str, PromptEvent event, Context& context) mutable
             {
                 if ((event == PromptEvent::Abort and on_abort.empty()) or

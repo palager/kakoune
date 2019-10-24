@@ -15,7 +15,7 @@ hook global BufCreate .*[.](ts)x? %{
 hook global WinSetOption filetype=(javascript|typescript) %{
     require-module javascript
 
-    hook window ModeChange insert:.* -group "%val{hook_param_capture_1}-trim-indent" javascript-trim-indent
+    hook window ModeChange pop:insert:.* -group "%val{hook_param_capture_1}-trim-indent" javascript-trim-indent
     hook window InsertChar .* -group "%val{hook_param_capture_1}-indent" javascript-indent-on-char
     hook window InsertChar \n -group "%val{hook_param_capture_1}-indent" javascript-indent-on-new-line
 
@@ -57,7 +57,7 @@ define-command -hidden javascript-indent-on-new-line %<
         # copy // comments prefix and following white spaces
         try %{ execute-keys -draft k <a-x> s ^\h*\K#\h* <ret> y gh j P }
         # preserve previous line indent
-        try %{ execute-keys -draft \; K <a-&> }
+        try %{ execute-keys -draft <semicolon> K <a-&> }
         # filter previous line
         try %{ execute-keys -draft k : javascript-trim-indent <ret> }
         # indent after lines beginning / ending with opener token
@@ -130,3 +130,7 @@ add-highlighter shared/typescript/code/ regex \b(array|boolean|date|number|objec
 add-highlighter shared/typescript/code/ regex \b(as|constructor|declare|enum|from|implements|interface|module|namespace|package|private|protected|public|readonly|static|type)\b 0:keyword
 
 §
+
+# Aliases
+# ‾‾‾‾‾‾‾
+provide-module typescript %{ require-module javascript }

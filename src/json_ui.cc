@@ -10,6 +10,7 @@
 #include "unit_tests.hh"
 #include "value.hh"
 
+#include <cstdio>
 #include <utility>
 
 #include <unistd.h>
@@ -265,9 +266,9 @@ JsonResult parse_json(const char* pos, const char* end)
     if (not skip_while(pos, end, is_blank))
         return {};
 
-    if (is_digit(*pos))
+    if (is_digit(*pos) or *pos == '-')
     {
-        auto digit_end = pos;
+        auto digit_end = pos + 1;
         skip_while(digit_end, end, is_digit);
         return { Value{str_to_int({pos, digit_end})}, digit_end };
     }
@@ -429,12 +430,17 @@ void JsonUI::eval_json(const Value& json)
             m_on_key({Key::Modifiers::MouseReleaseLeft, coord});
         else if (type == "release_right")
             m_on_key({Key::Modifiers::MouseReleaseRight, coord});
-        else if (type == "wheel_up")
-            m_on_key({Key::Modifiers::MouseWheelUp, coord});
-        else if (type == "wheel_down")
-            m_on_key({Key::Modifiers::MouseWheelDown, coord});
         else
             throw invalid_rpc_request(format("invalid mouse event type: {}", type));
+    }
+    else if (method == "scroll")
+    {
+        if (params.size() != 1)
+            throw invalid_rpc_request("scroll needs an amount");
+        else if (not params[0].is_a<int>())
+            throw invalid_rpc_request("scroll amount is not an integer");
+        m_on_key({Key::Modifiers::Scroll, (Codepoint)params[0].as<int>()});
+
     }
     else if (method == "menu_select")
     {
@@ -515,6 +521,11 @@ UnitTest test_json_parser{[]()
         auto value = parse_json("[10,20]").value;
         kak_assert(value and value.is_a<JsonArray>());
         kak_assert(value.as<JsonArray>().at(1).as<int>() == 20);
+    }
+
+    {
+        auto value = parse_json("-1").value;
+        kak_assert(value.as<int>() == -1);
     }
 
     {

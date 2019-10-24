@@ -45,9 +45,15 @@ struct {
     const char* notes;
 } constexpr version_notes[] = { {
         0,
+        "» ModeChange parameter has changed to contain push/pop\n"
+        "  ${Mode}Begin/${Mode}End hooks were removed\n"
+    }, {
+        20190701,
         "» %file{...} expansions to read files\n"
         "» echo -to-file <filename> to write to file\n"
         "» completions option have an on select command instead of a docstring\n"
+        "» Function key syntax do not accept lower case f anymore\n"
+        "» shell quoting of list options is now opt-in with $kak_quoted_...\n"
     }, {
         20190120,
         "» named capture groups in regex\n"
@@ -105,8 +111,8 @@ struct startup_error : runtime_error
     using runtime_error::runtime_error;
 };
 
-inline void write_stdout(StringView str) { try { write(1, str); } catch (runtime_error&) {} }
-inline void write_stderr(StringView str) { try { write(2, str); } catch (runtime_error&) {} }
+inline void write_stdout(StringView str) { try { write(STDOUT_FILENO, str); } catch (runtime_error&) {} }
+inline void write_stderr(StringView str) { try { write(STDERR_FILENO, str); } catch (runtime_error&) {} }
 
 String runtime_directory()
 {
@@ -121,10 +127,11 @@ String runtime_directory()
 
 String config_directory()
 {
-    StringView config_home = getenv("XDG_CONFIG_HOME");
-    if (config_home.empty())
-        return format("{}/.config/kak", homedir());
-    return format("{}/kak", config_home);
+    if (StringView kak_cfg_dir = getenv("KAKOUNE_CONFIG_DIR"); not kak_cfg_dir.empty())
+        return kak_cfg_dir.str();
+    if (StringView xdg_cfg_home = getenv("XDG_CONFIG_HOME"); not xdg_cfg_home.empty())
+        return format("{}/kak", xdg_cfg_home);
+    return format("{}/.config/kak", homedir());
 }
 
 static const EnvVarDesc builtin_env_vars[] = { {
@@ -280,8 +287,11 @@ void register_registers()
 {
     RegisterManager& register_manager = RegisterManager::instance();
 
-    for (auto c : "abcdefghijklmnopqrstuvwxyz/\"|^@:")
+    for (auto c : StringView{"abcdefghijklmnopqrstuvwxyz\"^@"})
         register_manager.add_register(c, std::make_unique<StaticRegister>());
+
+    for (auto c : StringView{"/|:\\"})
+        register_manager.add_register(c, std::make_unique<HistoryRegister>());
 
     using StringList = Vector<String, MemoryDomain::Registers>;
 
@@ -330,6 +340,25 @@ void register_registers()
     }
 
     register_manager.add_register('_', std::make_unique<NullRegister>());
+}
+
+void register_keymaps()
+{
+    auto& keymaps = GlobalScope::instance().keymaps();
+    keymaps.map_key(Key::Left, KeymapMode::Normal, {'h'}, "");
+    keymaps.map_key(Key::Right, KeymapMode::Normal, {'l'}, "");
+    keymaps.map_key(Key::Down, KeymapMode::Normal, {'j'}, "");
+    keymaps.map_key(Key::Up, KeymapMode::Normal, {'k'}, "");
+
+    keymaps.map_key(shift(Key::Left), KeymapMode::Normal, {'H'}, "");
+    keymaps.map_key(shift(Key::Right), KeymapMode::Normal, {'L'}, "");
+    keymaps.map_key(shift(Key::Down), KeymapMode::Normal, {'J'}, "");
+    keymaps.map_key(shift(Key::Up), KeymapMode::Normal, {'K'}, "");
+
+    keymaps.map_key(Key::End, KeymapMode::Normal, {alt('l')}, "");
+    keymaps.map_key(Key::Home, KeymapMode::Normal, {alt('h')}, "");
+    keymaps.map_key(shift(Key::End), KeymapMode::Normal, {alt('L')}, "");
+    keymaps.map_key(shift(Key::Home), KeymapMode::Normal, {alt('H')}, "");
 }
 
 static void check_tabstop(const int& val)
@@ -432,8 +461,8 @@ void register_options()
                        "    ncurses_change_colors         bool\n"
                        "    ncurses_wheel_up_button       int\n"
                        "    ncurses_wheel_down_button     int\n"
-                       "    ncurses_shift_function_key    int\n"
-                       "    ncurses_builtin_key_parser    bool\n",
+                       "    ncurses_wheel_scroll_amount   int\n"
+                       "    ncurses_shift_function_key    int\n",
                        UserInterface::Options{});
     reg.declare_option("modelinefmt", "format string used to generate the modeline",
                        "%val{bufname} %val{cursor_line}:%val{cursor_char_column} {{context_info}} {{mode_info}} - %val{client}@[%val{session}]"_str);
@@ -453,7 +482,6 @@ void register_options()
 
 static Client* local_client = nullptr;
 static int local_client_exit = 0;
-static UserInterface* local_ui = nullptr;
 static bool convert_to_client_pending = false;
 
 enum class UIType
@@ -526,26 +554,10 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
     {
         LocalUI()
         {
-            kak_assert(not local_ui);
-            local_ui = this;
-
-            m_old_sigtstp = set_signal_handler(SIGTSTP, [](int) {
+            set_signal_handler(SIGTSTP, [](int) {
                 if (ClientManager::instance().count() == 1 and
                     *ClientManager::instance().begin() == local_client)
-                {
-                    // Suspend normally if we are the only client
-                    auto current = set_signal_handler(SIGTSTP, static_cast<LocalUI*>(local_ui)->m_old_sigtstp);
-
-                    sigset_t unblock_sigtstp, old_mask;
-                    sigemptyset(&unblock_sigtstp);
-                    sigaddset(&unblock_sigtstp, SIGTSTP);
-                    sigprocmask(SIG_UNBLOCK, &unblock_sigtstp, &old_mask);
-
-                    raise(SIGTSTP);
-
-                    set_signal_handler(SIGTSTP, current);
-                    sigprocmask(SIG_SETMASK, &old_mask, nullptr);
-                }
+                    NCursesUI::instance().suspend();
                 else
                     convert_to_client_pending = true;
            });
@@ -553,23 +565,17 @@ std::unique_ptr<UserInterface> create_local_ui(UIType ui_type)
 
         ~LocalUI() override
         {
-            set_signal_handler(SIGTSTP, m_old_sigtstp);
             local_client = nullptr;
-            local_ui = nullptr;
-            if (not convert_to_client_pending and
-                not ClientManager::instance().empty())
+            if (convert_to_client_pending or
+                ClientManager::instance().empty())
+                return;
+
+            if (fork_server_to_background())
             {
-                if (fork_server_to_background())
-                {
-                    this->NCursesUI::~NCursesUI();
-                    exit(local_client_exit);
-                }
+                this->NCursesUI::~NCursesUI();
+                exit(local_client_exit);
             }
         }
-
-    private:
-        using SigHandler = void (*)(int);
-        SigHandler m_old_sigtstp;
     };
 
     if (not isatty(1))
@@ -666,6 +672,7 @@ int run_server(StringView session, StringView server_init,
 
     register_options();
     register_registers();
+    register_keymaps();
     register_commands();
     register_highlighters();
 
@@ -1012,21 +1019,13 @@ int main(int argc, char* argv[])
         const bool clear_sessions = (bool)parser.get_switch("clear");
         if (list_sessions or clear_sessions)
         {
-            const String username = get_user_name();
-            const StringView tmp_dir = tmpdir();
-            for (auto& session : list_files(format("{}/kakoune/{}/", tmp_dir,
-                                                   username)))
+            for (auto& session : list_files(session_directory()))
             {
                 const bool valid = check_session(session);
                 if (list_sessions)
                     write_stdout(format("{}{}\n", session, valid ? "" : " (dead)"));
                 if (not valid and clear_sessions)
-                {
-                    char socket_file[128];
-                    format_to(socket_file, "{}/kakoune/{}/{}", tmp_dir,
-                              username, session);
-                    unlink(socket_file);
-                }
+                    unlink(session_path(session).c_str());
             }
             return 0;
         }
@@ -1078,12 +1077,12 @@ int main(int argc, char* argv[])
                 auto colon = find(name, ':');
                 if (auto line = str_to_int_ifp({name.begin()+1, colon}))
                 {
-                    init_coord = BufferCoord{
+                    init_coord = std::max<BufferCoord>({0,0}, {
                         *line - 1,
                         colon != name.end() ?
                             str_to_int_ifp({colon+1, name.end()}).value_or(1) - 1
                           : 0
-                    };
+                    });
                     continue;
                 }
             }
@@ -1167,7 +1166,7 @@ asm(R"(
 .ascii "sys.path.insert(0, os.path.dirname(gdb.current_objfile().filename) + '/../share/kak/gdb/')\n"
 .ascii "import gdb.printing\n"
 .ascii "import kakoune\n"
-.ascii "gdb.printing.register_pretty_printer(gdb.current_objfile(), kakoune.build_pretty_printer())\n"
+.ascii "gdb.printing.register_pretty_printer(gdb.current_objfile(), kakoune.build_pretty_printer())\n\0"
 .popsection
 )");
 #endif

@@ -92,8 +92,8 @@ struct MouseHandler
         Buffer& buffer = context.buffer();
         BufferCoord cursor;
         auto& selections = context.selections();
-        const auto key_modifier = (Key::Modifiers)(key.modifiers & Key::Modifiers::MouseEvent);
-        switch (key_modifier)
+        constexpr auto modifiers = Key::Modifiers::Control | Key::Modifiers::Alt | Key::Modifiers::Shift;
+        switch ((key.modifiers & ~modifiers).value)
         {
         case Key::Modifiers::MousePressRight:
             m_dragging = false;
@@ -137,14 +137,8 @@ struct MouseHandler
             selections.sort_and_merge_overlapping();
             return true;
 
-        case Key::Modifiers::MouseWheelDown:
-            m_dragging = false;
-            scroll_window(context, 3);
-            return true;
-
-        case Key::Modifiers::MouseWheelUp:
-            m_dragging = false;
-            scroll_window(context, -3);
+        case Key::Modifiers::Scroll:
+            scroll_window(context, static_cast<int32_t>(key.key), not m_dragging);
             return true;
 
         default: return false;
@@ -209,8 +203,6 @@ public:
             context().hooks_disabled().unset();
             m_hooks_disabled = false;
         }
-
-        context().hooks().run_hook(Hook::NormalBegin, "", context());
     }
 
     void on_disabled(bool temporary) override
@@ -223,24 +215,12 @@ public:
             context().hooks_disabled().unset();
             m_hooks_disabled = false;
         }
-
-        context().hooks().run_hook(Hook::NormalEnd, "", context());
     }
 
     void on_key(Key key) override
     {
         kak_assert(m_state != State::PopOnEnabled);
         ScopedSetBool set_in_on_key{m_in_on_key};
-
-        // Hack to parse keys sent by terminals using the 8th bit to mark the
-        // meta key. In normal mode, give priority to a potential alt-key than
-        // the accentuated character.
-        if (not (key.modifiers & Key::Modifiers::MouseEvent) and
-            key.key >= 127 and key.key < 256)
-        {
-            key.modifiers |= Key::Modifiers::Alt;
-            key.key &= 0x7f;
-        }
 
         bool do_restore_hooks = false;
         auto restore_hooks = on_scope_end([&, this]{
@@ -253,8 +233,6 @@ public:
 
         const bool transient = context().flags() & Context::Flags::Draft;
 
-        auto cp = key.codepoint();
-
         if (m_mouse_handler.handle_key(key, context()))
         {
             context().print_status({});
@@ -264,7 +242,7 @@ public:
             if (not transient)
                 m_idle_timer.set_next_date(Clock::now() + get_idle_timeout(context()));
         }
-        else if (cp and isdigit(*cp))
+        else if (auto cp = key.codepoint(); cp and isdigit(*cp))
         {
             long long new_val = (long long)m_params.count * 10 + *cp - '0';
             if (new_val > std::numeric_limits<int>::max())
@@ -309,6 +287,15 @@ public:
             context().print_status({});
             if (context().has_client())
                 context().client().info_hide();
+
+            // Hack to parse keys sent by terminals using the 8th bit to mark the
+            // meta key. In normal mode, give priority to a potential alt-key than
+            // the accentuated character.
+            if (key.key >= 127 and key.key < 256)
+            {
+                key.modifiers |= Key::Modifiers::Alt;
+                key.key &= 0x7f;
+            }
 
             do_restore_hooks = true;
             if (auto command = get_normal_command(key))
@@ -490,7 +477,7 @@ public:
         }
         else if (key == alt('f'))
             to_next_word_begin<Word>(m_cursor_pos, m_line);
-        else if (key == alt('W'))
+        else if (key == alt('F'))
             to_next_word_begin<WORD>(m_cursor_pos, m_line);
         else if (key == alt('b'))
             to_prev_word_begin<Word>(m_cursor_pos, m_line);
@@ -514,7 +501,7 @@ public:
         else if (key == ctrl('w') or key == alt(Key::Backspace))
             erase_move(&to_prev_word_begin<Word>);
         else if (key == ctrl('W'))
-            erase_move(&to_prev_word_begin<Word>);
+            erase_move(&to_prev_word_begin<WORD>);
         else if (key == alt('d'))
             erase_move(&to_next_word_begin<Word>);
         else if (key == alt('D'))
@@ -751,11 +738,13 @@ class Prompt : public InputMode
 public:
     Prompt(InputHandler& input_handler, StringView prompt,
            String initstr, String emptystr, Face face, PromptFlags flags,
-           PromptCompleter completer, PromptCallback callback)
+           char history_register, PromptCompleter completer, PromptCallback callback)
         : InputMode(input_handler), m_callback(std::move(callback)), m_completer(std::move(completer)),
           m_prompt(prompt.str()), m_prompt_face(face),
           m_empty_text{std::move(emptystr)},
           m_line_editor{context().faces()}, m_flags(flags),
+          m_history{RegisterManager::instance()[history_register]},
+          m_current_history{m_history.get(context()).size()},
           m_auto_complete{context().options()["autocomplete"].get<AutoComplete>() & AutoComplete::Prompt},
           m_idle_timer{TimePoint::max(), context().flags() & Context::Flags::Draft ?
                            Timer::Callback{} : [this](Timer&) {
@@ -769,19 +758,25 @@ public:
                            context().hooks().run_hook(Hook::PromptIdle, "", context());
                        }}
     {
-        m_history_it = ms_history[m_prompt].end();
         m_line_editor.reset(std::move(initstr), m_empty_text);
     }
 
     void on_key(Key key) override
     {
-        History& history = ms_history[m_prompt];
         const String& line = m_line_editor.line();
 
         if (key == Key::Return)
         {
-            if (not context().history_disabled())
-                history_push(history, line);
+            if ((m_completions.flags & Completions::Flags::Menu) and
+                m_current_completion == -1 and
+                not m_completions.candidates.empty())
+            {
+                const String& completion = m_completions.candidates.front();
+                m_line_editor.insert_from(line.char_count_to(m_completions.start),
+                                          completion);
+            }
+
+            history_push(line);
             context().print_status(DisplayLine{});
             if (context().has_client())
                 context().client().menu_hide();
@@ -797,8 +792,7 @@ public:
         }
         else if (key == Key::Escape or key == ctrl('c'))
         {
-            if (not context().history_disabled())
-                history_push(history, line);
+            history_push(line);
             context().print_status(DisplayLine{});
             if (context().has_client())
                 context().client().menu_hide();
@@ -844,22 +838,25 @@ public:
         }
         else if (key == Key::Up or key == ctrl('p'))
         {
-            if (m_history_it != history.begin())
+            if (m_current_history != 0)
             {
-                if (m_history_it == history.end())
+                auto history = m_history.get(context());
+                // The history register might have been mutated in the mean time
+                m_current_history = std::min(history.size(), m_current_history);
+                if (m_current_history == history.size())
                    m_prefix = line;
-                auto it = m_history_it;
+                auto index = m_current_history;
                 // search for the previous history entry matching typed prefix
                 do
                 {
-                    --it;
-                    if (prefix_match(*it, m_prefix))
+                    --index;
+                    if (prefix_match(history[index], m_prefix))
                     {
-                        m_history_it = it;
-                        m_line_editor.reset(*it, m_empty_text);
+                        m_current_history = index;
+                        m_line_editor.reset(history[index], m_empty_text);
                         break;
                     }
-                } while (it != history.begin());
+                } while (index != 0);
 
                 clear_completions();
                 m_refresh_completion_pending = true;
@@ -867,16 +864,19 @@ public:
         }
         else if (key == Key::Down or key == ctrl('n')) // next
         {
-            if (m_history_it != history.end())
+            auto history = m_history.get(context());
+            // The history register might have been mutated in the mean time
+            m_current_history = std::min(history.size(), m_current_history);
+            if (m_current_history < history.size())
             {
                 // search for the next history entry matching typed prefix
-                ++m_history_it;
-                while (m_history_it != history.end() and
-                       not prefix_match(*m_history_it, m_prefix))
-                    ++m_history_it;
+                ++m_current_history;
+                while (m_current_history != history.size() and
+                       not prefix_match(history[m_current_history], m_prefix))
+                    ++m_current_history;
 
-                if (m_history_it != history.end())
-                    m_line_editor.reset(*m_history_it, m_empty_text);
+                if (m_current_history != history.size())
+                    m_line_editor.reset(history[m_current_history], m_empty_text);
                 else
                     m_line_editor.reset(m_prefix, m_empty_text);
 
@@ -1001,6 +1001,7 @@ private:
             const String& line = m_line_editor.line();
             m_completions = m_completer(context(), flags, line,
                                         line.byte_count_to(m_line_editor.cursor_pos()));
+            const bool menu = (bool)(m_completions.flags & Completions::Flags::Menu);
             if (context().has_client())
             {
                 if (m_completions.candidates.empty())
@@ -1013,8 +1014,11 @@ private:
                 const auto menu_style = (m_flags & PromptFlags::Search) ? MenuStyle::Search : MenuStyle::Prompt;
                 context().client().menu_show(items, {}, menu_style);
 
+                if (menu)
+                    context().client().menu_select(0);
+
                 auto prefix = line.substr(m_completions.start, m_completions.end - m_completions.start);
-                if (not contains(m_completions.candidates, prefix))
+                if (not menu and not contains(m_completions.candidates, prefix))
                 {
                     m_current_completion = m_completions.candidates.size();
                     m_completions.candidates.push_back(prefix.str());
@@ -1076,27 +1080,22 @@ private:
     LineEditor     m_line_editor;
     bool           m_line_changed = false;
     PromptFlags    m_flags;
+    Register&      m_history;
+    size_t         m_current_history;
     bool           m_auto_complete;
     bool           m_refresh_completion_pending = true;
     Timer          m_idle_timer;
 
-    using History = Vector<String, MemoryDomain::History>;
-    static HashMap<String, History, MemoryDomain::History> ms_history;
-    History::iterator m_history_it;
-
-    void history_push(History& history, StringView entry)
+    void history_push(StringView entry)
     {
-        if (entry.empty() or
+        if (entry.empty() or context().history_disabled() or
             (m_flags & PromptFlags::DropHistoryEntriesWithBlankPrefix and
              is_horizontal_blank(entry[0_byte])))
             return;
 
-        history.erase(std::remove(history.begin(), history.end(), entry),
-                      history.end());
-        history.push_back(entry.str());
+        m_history.set(context(), {entry.str()});
     }
 };
-HashMap<String, Prompt::History, MemoryDomain::History> Prompt::ms_history;
 
 class NextKey : public InputMode
 {
@@ -1150,7 +1149,6 @@ public:
         last_insert().keys.clear();
         last_insert().disable_hooks = context().hooks_disabled();
         last_insert().count = count;
-        context().hooks().run_hook(Hook::InsertBegin, "", context());
         prepare(mode, count);
     }
 
@@ -1194,11 +1192,6 @@ public:
         }
         else if (key == Key::Escape or key == ctrl('c'))
         {
-            if (m_in_end)
-                throw runtime_error("asked to exit insert mode while running InsertEnd hook");
-            m_in_end = true;
-            context().hooks().run_hook(Hook::InsertEnd, "", context());
-
             m_completer.reset();
             pop_mode();
         }
@@ -1222,6 +1215,8 @@ public:
 
             if (not main_char.empty())
                 context().hooks().run_hook(Hook::InsertDelete, main_char, context());
+
+            context().selections_write_only().update(false);
         }
         else if (key == Key::Delete)
         {
@@ -1491,7 +1486,6 @@ private:
     const bool      m_restore_cursor;
     bool            m_auto_complete;
     Timer           m_idle_timer;
-    bool            m_in_end = false;
     MouseHandler    m_mouse_handler;
     ScopedSetBool   m_disable_hooks;
 };
@@ -1515,7 +1509,7 @@ void InputHandler::push_mode(InputMode* new_mode)
     m_mode_stack.emplace_back(new_mode);
     new_mode->on_enabled();
 
-    context().hooks().run_hook(Hook::ModeChange, format("{}:{}", prev_name, new_mode->name()), context());
+    context().hooks().run_hook(Hook::ModeChange, format("push:{}:{}", prev_name, new_mode->name()), context());
 }
 
 void InputHandler::pop_mode(InputMode* mode)
@@ -1529,7 +1523,7 @@ void InputHandler::pop_mode(InputMode* mode)
     m_mode_stack.pop_back();
     current_mode().on_enabled();
 
-    context().hooks().run_hook(Hook::ModeChange, format("{}:{}", prev_name, current_mode().name()), context());
+    context().hooks().run_hook(Hook::ModeChange, format("pop:{}:{}", prev_name, current_mode().name()), context());
 }
 
 void InputHandler::reset_normal_mode()
@@ -1538,12 +1532,8 @@ void InputHandler::reset_normal_mode()
     if (m_mode_stack.size() == 1)
         return;
 
-    StringView prev_name = current_mode().name();
-    current_mode().on_disabled(false);
-    m_mode_stack.resize(1);
-    current_mode().on_enabled();
-
-    context().hooks().run_hook(Hook::ModeChange, format("{}:{}", prev_name, current_mode().name()), context());
+    while (m_mode_stack.size() > 1)
+        pop_mode(m_mode_stack.back().get());
 }
 
 void InputHandler::insert(InsertMode mode, int count)
@@ -1577,11 +1567,12 @@ void InputHandler::repeat_last_insert()
 }
 
 void InputHandler::prompt(StringView prompt, String initstr, String emptystr,
-                          Face prompt_face, PromptFlags flags,
+                          Face prompt_face, PromptFlags flags, char history_register,
                           PromptCompleter completer, PromptCallback callback)
 {
     push_mode(new InputModes::Prompt(*this, prompt, std::move(initstr), std::move(emptystr),
-                                     prompt_face, flags, std::move(completer), std::move(callback)));
+                                     prompt_face, flags, history_register,
+                                     std::move(completer), std::move(callback)));
 }
 
 void InputHandler::set_prompt_face(Face prompt_face)
@@ -1730,7 +1721,7 @@ void hide_auto_info_ifn(const Context& context, bool hide)
         context.client().info_hide();
 }
 
-void scroll_window(Context& context, LineCount offset)
+void scroll_window(Context& context, LineCount offset, bool adapt_cursor)
 {
     Window& window = context.window();
     Buffer& buffer = context.buffer();
@@ -1744,6 +1735,10 @@ void scroll_window(Context& context, LineCount offset)
 
     const LineCount line_count = buffer.line_count();
     win_pos.line = clamp(win_pos.line + offset, 0_line, line_count-1);
+    window.set_position(win_pos);
+
+    if (not adapt_cursor)
+        return;
 
     SelectionList& selections = context.selections();
     const BufferCoord cursor = selections.main().cursor();
@@ -1759,7 +1754,6 @@ void scroll_window(Context& context, LineCount offset)
                    buffer[line].length()-1);
 
     selections = SelectionList{buffer, BufferCoord{line, col}};
-    window.set_position(win_pos);
 }
 
 }

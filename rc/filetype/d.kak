@@ -17,7 +17,7 @@ hook global WinSetOption filetype=d %{
     set-option window static_words %opt{d_static_words}
 
     # cleanup trailing whitespaces when exiting insert mode
-    hook window ModeChange insert:.* -group d-trim-indent %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
+    hook window ModeChange pop:insert:.* -group d-trim-indent %{ try %{ execute-keys -draft <a-x>s^\h+$<ret>d } }
     hook window InsertChar \n -group d-indent d-indent-on-new-line
     hook window InsertChar \{ -group d-indent d-indent-on-opening-curly-brace
     hook window InsertChar \} -group d-indent d-indent-on-closing-curly-brace
@@ -38,8 +38,7 @@ provide-module d %§
 add-highlighter shared/d regions
 add-highlighter shared/d/code default-region group
 add-highlighter shared/d/string region %{(?<!')(?<!'\\)"} %{(?<!\\)(?:\\\\)*"} group
-add-highlighter shared/d/verbatim_string1 region ` ` fill meta
-add-highlighter shared/d/verbatim_string2 region %{(?<!')(?<!'\\)`} %{(?<!\\)(?:\\\\)*`} fill meta
+add-highlighter shared/d/verbatim_string region %{(?<!')(?<!'\\)`} %{(?<!\\)(?:\\\\)*`} fill meta
 add-highlighter shared/d/verbatim_string_prefixed region %{r`([^(]*)\(} %{\)([^)]*)`} fill meta
 add-highlighter shared/d/disabled region '/\+[^+]?' '\+/' fill comment
 add-highlighter shared/d/comment1 region '/\*[^*]?' '\*/' fill comment
@@ -54,7 +53,7 @@ add-highlighter shared/d/code/ regex %{'((\\.)?|[^'\\])'} 0:value
 add-highlighter shared/d/code/ regex "-?([0-9_]*\.(?!0[xXbB]))?\b([0-9_]+|0[xX][0-9a-fA-F_]*\.?[0-9a-fA-F_]+|0[bb][01_]+)([ep]-?[0-9_]+)?[fFlLuUi]*\b" 0:value
 add-highlighter shared/d/code/ regex "\b(this)\b\s*[^(]" 1:value
 add-highlighter shared/d/code/ regex "((?:~|\b)this)\b\s*\(" 1:function
-add-highlighter shared/d/code/ regex '#\s*line\b.*' 0:meta
+add-highlighter shared/d/code/ regex '(#line)\h+(\d+)(\h+"[^"\n]*")?' 1:meta 2:value 3:string
 
 evaluate-commands %sh{
     # Grammar
@@ -109,7 +108,7 @@ add-highlighter shared/d/code/ regex "\bmodule\s+([\w_-]+)\b" 1:module
 define-command -hidden d-indent-on-new-line %~
     evaluate-commands -draft -itersel %=
         # preserve previous line indent
-        try %{ execute-keys -draft \;K<a-&> }
+        try %{ execute-keys -draft <semicolon>K<a-&> }
         # indent after lines ending with { or (
         try %[ execute-keys -draft k<a-x> <a-k> [{(]\h*$ <ret> j<a-gt> ]
         # cleanup trailing white spaces on the previous line
@@ -117,11 +116,11 @@ define-command -hidden d-indent-on-new-line %~
         # align to opening paren of previous line
         try %{ execute-keys -draft [( <a-k> \A\([^\n]+\n[^\n]*\n?\z <ret> s \A\(\h*.|.\z <ret> '<a-;>' & }
         # copy // comments prefix
-        try %{ execute-keys -draft \;<c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o>P<esc> }
+        try %{ execute-keys -draft <semicolon><c-s>k<a-x> s ^\h*\K/{2,} <ret> y<c-o>P<esc> }
         # indent after a switch's case/default statements
         try %[ execute-keys -draft k<a-x> <a-k> ^\h*(case|default).*:$ <ret> j<a-gt> ]
         # indent after if|else|while|for
-        try %[ execute-keys -draft \;<a-F>)MB <a-k> \A(if|else|while|for)\h*\(.*\)\h*\n\h*\n?\z <ret> s \A|.\z <ret> 1<a-&>1<a-space><a-gt> ]
+        try %[ execute-keys -draft <semicolon><a-F>)MB <a-k> \A(if|else|while|for)\h*\(.*\)\h*\n\h*\n?\z <ret> s \A|.\z <ret> 1<a-&>1<a-space><a-gt> ]
     =
 ~
 
